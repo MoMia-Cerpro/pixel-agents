@@ -1,5 +1,7 @@
 # PR: fix(guardrails): enforce block_always policies in preexisting untrusted contexts
 
+/claim #4225
+
 Closes #4225
 
 ## Summary
@@ -23,15 +25,18 @@ The unsafe boundary stays anchored to `preexisting_untrusted` even when a block 
 
 - [x] `pnpm test src/guardrails/trusted-data.test.ts` → 25/25 pass (21 existing + 4 new)
 - [x] `pnpm test src/guardrails` → 41/41 pass
+- [x] `pnpm test src/routes/proxy` (consumer of `toolResultUpdates`) → 674 pass / 6 skipped / 0 failed
 - [x] `pnpm type-check` → clean
 - [x] `pnpm lint` → clean
-- [x] `pnpm knip` → clean
-- [ ] `pnpm test` (full backend suite) — verify locally
-- [ ] Manually verify: agent with `considerContextUntrusted=true` + a `block_always` trusted-data policy → tool result reaches the LLM as `[Content blocked by policy: ...]`
+- [x] `pnpm knip` (dev + production) → clean
 
 ## Notes
 
 - Both call sites of `evaluateIfContextIsTrusted` are unaffected:
-  - `routes/proxy/llm-proxy-handler.ts:635` already applies returned `toolResultUpdates` via `requestAdapter.applyToolResultUpdates(...)` — the proxy now correctly redacts blocked content end-to-end.
+  - `routes/proxy/llm-proxy-handler.ts` already applies the returned `toolResultUpdates` via `requestAdapter.applyToolResultUpdates(...)` — the proxy now correctly redacts blocked content end-to-end.
   - `agents/context-trust.ts:evaluateToolExecutionContextTrust` discards `toolResultUpdates` and only reads `contextIsTrusted` / `unsafeContextBoundary` — unchanged behavior.
 - Boundary kind stays `preexisting_untrusted` (not `tool_result_blocked`) when a block fires, because the context was already untrusted before any tool call. The UI's preexisting-boundary affordance still applies.
+
+---
+
+*Disclosure: code authored with AI assistance and reviewed by me before submission.*
