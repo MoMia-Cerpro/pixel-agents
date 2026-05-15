@@ -24,8 +24,7 @@ The unsafe boundary stays anchored to `preexisting_untrusted` even when a block 
 ## Test plan
 
 - [x] `pnpm test src/guardrails/trusted-data.test.ts` → 25/25 pass (21 existing + 4 new)
-- [x] `pnpm test src/guardrails` → 41/41 pass
-- [x] `pnpm test src/routes/proxy` (consumer of `toolResultUpdates`) → 674 pass / 6 skipped / 0 failed
+- [x] `pnpm test` (full backend suite) → 6270 pass / 2 expected-fail / 8 skipped / 0 failed across 322 files
 - [x] `pnpm type-check` → clean
 - [x] `pnpm lint` → clean
 - [x] `pnpm knip` (dev + production) → clean

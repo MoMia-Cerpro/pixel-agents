@@ -76,10 +76,7 @@ git push -u origin fix/4225-block-policies-preexisting-untrusted
 | Check | Result |
 |---|---|
 | 4 new tests + 21 existing trusted-data tests | **25/25 pass** |
-| All guardrails tests | 41/41 pass |
-| Agents + context-trust + dual-llm + mcp-client tests | 66/66 pass |
-| Agent route tests | 84/84 pass |
-| **Proxy adapter tests** (consumer of `toolResultUpdates`) | **674 pass / 6 skipped / 0 failed** |
+| **Full backend test suite** (`pnpm test`) | **6270 pass / 2 expected-fail / 8 skipped / 0 failed across 322 files** |
 | `pnpm type-check` | clean |
 | `pnpm lint` (Biome) | clean |
 | `pnpm knip` (dev + production) | clean |
