@@ -1,0 +1,345 @@
+diff --git a/platform/backend/src/guardrails/trusted-data.test.ts b/platform/backend/src/guardrails/trusted-data.test.ts
+index 36bee8e..dd7cbdd 100644
+--- a/platform/backend/src/guardrails/trusted-data.test.ts
++++ b/platform/backend/src/guardrails/trusted-data.test.ts
+@@ -410,6 +410,208 @@ describe("trusted-data evaluation (provider-agnostic)", () => {
+       });
+     });
+ 
++    test("enforces block_always policies when context starts untrusted", async () => {
++      // Block policies must still apply when an agent starts in a sensitive
++      // (preexisting untrusted) context — the context is already untrusted,
++      // but dangerous tool results must still be redacted before reaching the
++      // LLM. Previously this path returned early and skipped policy evaluation.
++      await TrustedDataPolicyModel.create({
++        toolId,
++        conditions: [
++          { key: "emails[*].from", operator: "contains", value: "hacker" },
++        ],
++        action: "block_always",
++        description: "Block hacker emails",
++      });
++
++      const commonMessages: CommonMessage[] = [
++        { role: "user", content: "Summarize this thread" },
++        {
++          role: "tool",
++          toolCalls: [
++            {
++              id: "call_blocked",
++              name: "get_emails",
++              content: {
++                emails: [{ from: "hacker@evil.com", subject: "Malicious" }],
++              },
++              isError: false,
++            },
++          ],
++        },
++      ];
++
++      const result = await evaluateIfContextIsTrusted(
++        commonMessages,
++        agentId,
++        organizationId,
++        undefined,
++        true,
++        "restrictive",
++        { teamIds: [] },
++        undefined,
++        undefined,
++        "inherited_from_parent",
++      );
++
++      expect(result.contextIsTrusted).toBe(false);
++      expect(result.toolResultUpdates).toEqual({
++        call_blocked:
++          "[Content blocked by policy: Data blocked by policy: Block hacker emails]",
++      });
++      // Boundary stays anchored to the preexisting untrusted state — the block
++      // is an additional safeguard, not the source of the untrusted boundary.
++      expect(result.unsafeContextBoundary).toEqual({
++        kind: "preexisting_untrusted",
++        reason: "inherited_from_parent",
++      });
++      expect(result.usedDualLlm).toBe(false);
++      expect(result.dualLlmAnalyses).toEqual([]);
++    });
++
++    test("only blocked tool results are redacted when context starts untrusted", async () => {
++      await TrustedDataPolicyModel.create({
++        toolId,
++        conditions: [{ key: "source", operator: "equal", value: "malicious" }],
++        action: "block_always",
++        description: "Block malicious source",
++      });
++
++      const commonMessages: CommonMessage[] = [
++        { role: "user", content: "Process" },
++        {
++          role: "tool",
++          toolCalls: [
++            {
++              id: "call_safe",
++              name: "get_emails",
++              content: { source: "unknown", data: "some data" },
++              isError: false,
++            },
++            {
++              id: "call_blocked",
++              name: "get_emails",
++              content: { source: "malicious", data: "bad data" },
++              isError: false,
++            },
++          ],
++        },
++      ];
++
++      const result = await evaluateIfContextIsTrusted(
++        commonMessages,
++        agentId,
++        organizationId,
++        undefined,
++        true,
++        "restrictive",
++        { teamIds: [] },
++      );
++
++      expect(result.contextIsTrusted).toBe(false);
++      expect(result.toolResultUpdates).toEqual({
++        call_blocked:
++          "[Content blocked by policy: Data blocked by policy: Block malicious source]",
++      });
++      expect(result.unsafeContextBoundary).toEqual({
++        kind: "preexisting_untrusted",
++        reason: "agent_configured_untrusted",
++      });
++    });
++
++    test("skips dual LLM sanitization when context starts untrusted", async () => {
++      // sanitize_with_dual_llm only makes sense when the context could
++      // otherwise become trusted. When the context is preexisting untrusted,
++      // we skip the expensive dual LLM call entirely.
++      await TrustedDataPolicyModel.create({
++        toolId,
++        conditions: [{ key: "source", operator: "equal", value: "external" }],
++        action: "sanitize_with_dual_llm",
++        description: "Sanitize external data",
++      });
++
++      const createSpy = vi.spyOn(DualLlmSubagent, "create");
++
++      const commonMessages: CommonMessage[] = [
++        { role: "user", content: "Process" },
++        {
++          role: "tool",
++          toolCalls: [
++            {
++              id: "call_external",
++              name: "get_emails",
++              content: { source: "external", payload: "raw" },
++              isError: false,
++            },
++          ],
++        },
++      ];
++
++      const result = await evaluateIfContextIsTrusted(
++        commonMessages,
++        agentId,
++        organizationId,
++        undefined,
++        true,
++        "restrictive",
++        { teamIds: [] },
++      );
++
++      expect(createSpy).not.toHaveBeenCalled();
++      expect(result.contextIsTrusted).toBe(false);
++      expect(result.usedDualLlm).toBe(false);
++      expect(result.toolResultUpdates).toEqual({});
++      expect(result.dualLlmAnalyses).toEqual([]);
++
++      createSpy.mockRestore();
++    });
++
++    test("permissive (YOLO) mode still trusts data under preexisting untrusted context", async () => {
++      // YOLO mode is a deliberate admin override. It should keep its
++      // bypass-everything semantics regardless of the preexisting flag — block
++      // policies are intentionally ignored in permissive mode (matching the
++      // dedicated YOLO tests above). The context remains untrusted because the
++      // caller explicitly said so, but no tool results get redacted.
++      await TrustedDataPolicyModel.create({
++        toolId,
++        conditions: [{ key: "from", operator: "contains", value: "hacker" }],
++        action: "block_always",
++        description: "Block hacker emails",
++      });
++
++      const commonMessages: CommonMessage[] = [
++        { role: "user", content: "Process" },
++        {
++          role: "tool",
++          toolCalls: [
++            {
++              id: "call_yolo",
++              name: "get_emails",
++              content: { from: "hacker@evil.com" },
++              isError: false,
++            },
++          ],
++        },
++      ];
++
++      const result = await evaluateIfContextIsTrusted(
++        commonMessages,
++        agentId,
++        organizationId,
++        undefined,
++        true,
++        "permissive",
++        { teamIds: [] },
++      );
++
++      expect(result.contextIsTrusted).toBe(false);
++      expect(result.toolResultUpdates).toEqual({});
++      expect(result.unsafeContextBoundary).toEqual({
++        kind: "preexisting_untrusted",
++        reason: "agent_configured_untrusted",
++      });
++    });
++
+     test("handles multiple tool calls with mixed trust", async () => {
+       // Create policies
+       await TrustedDataPolicyModel.create({
+diff --git a/platform/backend/src/guardrails/trusted-data.ts b/platform/backend/src/guardrails/trusted-data.ts
+index b5ace42..2f913a8 100644
+--- a/platform/backend/src/guardrails/trusted-data.ts
++++ b/platform/backend/src/guardrails/trusted-data.ts
+@@ -64,45 +64,69 @@ export async function evaluateIfContextIsTrusted(
+   let unsafeContextBoundary: UnsafeContextBoundary | undefined;
+ 
+   // If agent configured to consider context untrusted from the beginning,
+-  // mark context as untrusted immediately and skip evaluation
++  // mark context as untrusted but still enforce block_always tool result
++  // policies. Trust/sanitize actions are skipped because the context can no
++  // longer become trusted in this turn — but blocked content must still be
++  // redacted before reaching the LLM.
+   if (considerContextUntrusted) {
+     logger.debug(
+       { agentId },
+       "[trustedData] evaluateIfContextIsTrusted: context marked untrusted by agent config",
+     );
++
++    const preexistingBoundary: UnsafeContextBoundary = {
++      kind: "preexisting_untrusted",
++      reason:
++        initialUntrustedReason ??
++        UNSAFE_CONTEXT_BOUNDARY_REASON.agentConfiguredUntrusted,
++    };
++
++    const preexistingToolCalls = collectToolCalls(messages);
++    if (preexistingToolCalls.length === 0) {
++      return {
++        toolResultUpdates: {},
++        contextIsTrusted: false,
++        usedDualLlm: false,
++        dualLlmAnalyses: [],
++        unsafeContextBoundary: preexistingBoundary,
++      };
++    }
++
++    const preexistingEvaluation = await TrustedDataPolicyModel.evaluateBulk(
++      agentId,
++      preexistingToolCalls.map(({ toolName, toolResult }) => ({
++        toolName,
++        toolOutput: toolResult,
++      })),
++      globalToolPolicy,
++      policyContext,
++    );
++
++    const preexistingUpdates: ToolResultUpdates = {};
++    for (let i = 0; i < preexistingToolCalls.length; i++) {
++      const { toolCallId, toolName } = preexistingToolCalls[i];
++      const evaluation = preexistingEvaluation.get(i.toString());
++      if (evaluation?.isBlocked) {
++        logger.debug(
++          { agentId, toolCallId, toolName, reason: evaluation.reason },
++          "[trustedData] evaluateIfContextIsTrusted: tool result blocked by policy under preexisting untrusted context",
++        );
++        preexistingUpdates[toolCallId] =
++          `[Content blocked by policy${evaluation.reason ? `: ${evaluation.reason}` : ""}]`;
++      }
++    }
++
+     return {
+-      toolResultUpdates: {},
++      toolResultUpdates: preexistingUpdates,
+       contextIsTrusted: false,
+       usedDualLlm: false,
+       dualLlmAnalyses: [],
+-      unsafeContextBoundary: {
+-        kind: "preexisting_untrusted",
+-        reason:
+-          initialUntrustedReason ??
+-          UNSAFE_CONTEXT_BOUNDARY_REASON.agentConfiguredUntrusted,
+-      },
++      unsafeContextBoundary: preexistingBoundary,
+     };
+   }
+ 
+   // First, collect all tool calls from all messages
+-  const allToolCalls: Array<{
+-    toolCallId: string;
+-    toolName: string;
+-    // biome-ignore lint/suspicious/noExplicitAny: tool outputs can be any shape
+-    toolResult: any;
+-  }> = [];
+-
+-  for (const message of messages) {
+-    if (message.toolCalls && message.toolCalls.length > 0) {
+-      for (const toolCall of message.toolCalls) {
+-        allToolCalls.push({
+-          toolCallId: toolCall.id,
+-          toolName: toolCall.name,
+-          toolResult: toolCall.content,
+-        });
+-      }
+-    }
+-  }
++  const allToolCalls = collectToolCalls(messages);
+ 
+   logger.debug(
+     { agentId, toolCallCount: allToolCalls.length },
+@@ -301,3 +325,31 @@ function createToolResultBoundary(params: {
+     toolName: params.toolName,
+   };
+ }
++
++function collectToolCalls(messages: CommonMessage[]): Array<{
++  toolCallId: string;
++  toolName: string;
++  // biome-ignore lint/suspicious/noExplicitAny: tool outputs can be any shape
++  toolResult: any;
++}> {
++  const toolCalls: Array<{
++    toolCallId: string;
++    toolName: string;
++    // biome-ignore lint/suspicious/noExplicitAny: tool outputs can be any shape
++    toolResult: any;
++  }> = [];
++
++  for (const message of messages) {
++    if (message.toolCalls && message.toolCalls.length > 0) {
++      for (const toolCall of message.toolCalls) {
++        toolCalls.push({
++          toolCallId: toolCall.id,
++          toolName: toolCall.name,
++          toolResult: toolCall.content,
++        });
++      }
++    }
++  }
++
++  return toolCalls;
++}
